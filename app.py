@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-Single-file FastAPI app with a health endpoint and MySQL DB setup using SQLAlchemy.
-Minimal dependencies: fastapi, uvicorn, sqlalchemy, pymysql
-"""
-
 import os
 import time
 from typing import Generator
@@ -67,10 +62,6 @@ def get_db() -> Generator[Session, None, None]:
 
 @app.on_event("startup")
 def startup_event():
-    """
-    Try to create database tables. When running under docker-compose with MySQL,
-    the DB may not be ready yet; we retry a few times before giving up.
-    """
     max_retries = 10
     for attempt in range(1, max_retries + 1):
         try:
