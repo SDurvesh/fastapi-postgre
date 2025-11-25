@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+Single-file FastAPI app with a health endpoint and PostgreSQL DB setup using SQLAlchemy.
+Minimal dependencies: fastapi, uvicorn, sqlalchemy, psycopg2-binary
+"""
+
 import os
 import time
 from typing import Generator
@@ -10,18 +15,28 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, sessionmaker
 
+# ---------------------------------------------------
+# App host/port (needed for local python app.py runs)
+# ---------------------------------------------------
+APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
+APP_PORT = int(os.getenv("APP_PORT", 8000))
+
+# ---------------------------------------------------
+# PostgreSQL connection config
+# ---------------------------------------------------
 DB_USER = os.getenv("POSTGRES_USER", "appuser")
 DB_PASS = os.getenv("POSTGRES_PASSWORD", "apppass")
-DB_HOST = os.getenv("POSTGRES_HOST", "postgres")  # service/container name we will use in Docker
+DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
 DB_PORT = os.getenv("POSTGRES_PORT", "5432")
 DB_NAME = os.getenv("POSTGRES_DB", "appdb")
-
 
 SQLALCHEMY_DATABASE_URL = (
     f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
 
+# ---------------------------------------------------
 # SQLAlchemy setup
+# ---------------------------------------------------
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     pool_pre_ping=True,
@@ -32,13 +47,19 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Example model
+
+# ---------------------------------------------------
+# Example DB Model
+# ---------------------------------------------------
 class Employee(Base):
     __tablename__ = "employees"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False, index=True)
 
+
+# ---------------------------------------------------
 # Pydantic schemas
+# ---------------------------------------------------
 class EmployeeCreate(BaseModel):
     name: str
 
@@ -49,25 +70,31 @@ class EmployeeOut(BaseModel):
     class Config:
         orm_mode = True
 
-# FastAPI app
-app = FastAPI(title="Minimal FastAPI + MySQL Example")
+
+# ---------------------------------------------------
+# FastAPI App
+# ---------------------------------------------------
+app = FastAPI(title="FastAPI + PostgreSQL Application")
+
 
 def get_db() -> Generator[Session, None, None]:
-    """Dependency that yields a DB session (sync)."""
+    """Dependency that yields a DB session."""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
+
+# ---------------------------------------------------
+# Startup event: ensure DB tables, wait for DB ready
+# ---------------------------------------------------
 @app.on_event("startup")
 def startup_event():
     max_retries = 10
     for attempt in range(1, max_retries + 1):
         try:
-            # Create tables (safe - will not drop existing)
             Base.metadata.create_all(bind=engine)
-            # Quick simple check
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             app.state.db_ready = True
@@ -78,31 +105,31 @@ def startup_event():
             wait = min(2 ** attempt, 10)
             print(f"DB not ready (attempt {attempt}/{max_retries}): {e!r}. Retrying in {wait}s...")
             time.sleep(wait)
-    # If we get here, DB couldn't be reached
+
     print("Could not connect to DB after retries. App will start but /health will report DB down.")
 
+
+# ---------------------------------------------------
+# Health Check
+# ---------------------------------------------------
 @app.get("/health", tags=["health"])
 def health():
-    """
-    Health endpoint:
-    - returns {"status": "ok"} if app is running but DB might be down.
-    - attempts a DB check; returns 503 if DB is unreachable.
-    """
-    # Basic app-level health
-    app_ok = {"status": "ok", "db": "unknown"}
+    """Returns OK + DB status."""
+    response = {"status": "ok", "db": "unknown"}
 
     try:
-        # Quick DB check
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        app_ok["db"] = "ok"
-        return app_ok
-    except Exception as e:
-        app_ok["db"] = "down"
-        # Return 503 to indicate DB dependency failure
-        raise HTTPException(status_code=503, detail=app_ok)
+        response["db"] = "ok"
+        return response
+    except Exception:
+        response["db"] = "down"
+        raise HTTPException(status_code=503, detail=response)
 
-# Example CRUD endpoints to verify DB is working
+
+# ---------------------------------------------------
+# CRUD Endpoints
+# ---------------------------------------------------
 @app.post("/employees", response_model=EmployeeOut, tags=["employees"])
 def create_employee(payload: EmployeeCreate, db: Session = Depends(get_db)):
     emp = Employee(name=payload.name)
@@ -111,6 +138,7 @@ def create_employee(payload: EmployeeCreate, db: Session = Depends(get_db)):
     db.refresh(emp)
     return emp
 
+
 @app.get("/employees/{emp_id}", response_model=EmployeeOut, tags=["employees"])
 def get_employee(emp_id: int, db: Session = Depends(get_db)):
     emp = db.query(Employee).filter(Employee.id == emp_id).first()
@@ -118,14 +146,18 @@ def get_employee(emp_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Employee not found")
     return emp
 
+
+# ---------------------------------------------------
+# Root endpoint
+# ---------------------------------------------------
 @app.get("/")
 def root():
     return {"message": "Hello — FastAPI app is running. Check /health."}
 
-# If run directly, start uvicorn
+
+# ---------------------------------------------------
+# Local execution (not used in Docker)
+# ---------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("app:app", host=APP_HOST, port=APP_PORT, reload=False, workers=1)
-
-
